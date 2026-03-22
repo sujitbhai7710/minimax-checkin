@@ -9,7 +9,7 @@ const API_BASE_URL = 'https://minimax-checkin.minimaxpro.workers.dev/api';
 // Create axios instance
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 60000, // Increased timeout for check-in operations
   headers: {
     'Content-Type': 'application/json',
   },
@@ -56,6 +56,10 @@ export const authApi = {
     api.get('/auth/me'),
 };
 
+// Test cookies before adding account
+export const testCookiesApi = (cookies: string) =>
+  api.post('/accounts/test', { cookies });
+
 // Accounts API
 export const accountsApi = {
   getAll: () =>
@@ -78,6 +82,9 @@ export const accountsApi = {
   
   refresh: (id: number) =>
     api.post(`/accounts/${id}/refresh`),
+  
+  test: (id: number) =>
+    api.post(`/accounts/${id}/test`),
 };
 
 // Admin API

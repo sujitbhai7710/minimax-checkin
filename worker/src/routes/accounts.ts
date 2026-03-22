@@ -16,9 +16,45 @@ import {
 } from '../utils/db';
 import { encrypt, decrypt } from '../utils/crypto';
 import { getCurrentUser } from '../utils/middleware';
-import { validateCookies, fetchCredits, completeCheckinFlow } from '../utils/minimax';
+import { validateCookies, fetchCredits, completeCheckinFlow, testCookies, normalizeCookies } from '../utils/minimax';
 
 const accountRoutes = new Hono<{ Bindings: Env }>();
+
+// Test cookies endpoint (before adding account)
+accountRoutes.post('/test', async (c) => {
+  const body = await c.req.json<{ cookies: string }>();
+  const { cookies } = body;
+  
+  if (!cookies) {
+    return c.json<ApiResponse>({
+      success: false,
+      error: 'Cookies are required'
+    }, 400);
+  }
+  
+  const result = await testCookies(cookies);
+  
+  if (!result.success) {
+    return c.json<ApiResponse>({
+      success: false,
+      error: result.error || 'Invalid cookies'
+    }, 400);
+  }
+  
+  return c.json<ApiResponse<{
+    user: typeof result.user;
+    credits: typeof result.credits;
+    checkin: typeof result.checkin;
+  }>>({
+    success: true,
+    data: {
+      user: result.user,
+      credits: result.credits,
+      checkin: result.checkin
+    },
+    message: 'Cookies are valid!'
+  });
+});
 
 // Get all accounts for current user
 accountRoutes.get('/', async (c) => {
@@ -93,22 +129,24 @@ accountRoutes.post('/', async (c) => {
     }, 400);
   }
   
-  // Validate cookies by testing them
-  const validationResult = await validateCookies(cookies);
+  // Test cookies first
+  const testResult = await testCookies(cookies);
   
-  if (!validationResult.valid) {
+  if (!testResult.success) {
     return c.json<ApiResponse>({
       success: false,
-      error: `Invalid cookies: ${validationResult.error}`
+      error: `Invalid cookies: ${testResult.error}`
     }, 400);
   }
   
-  // Encrypt cookies
-  const encryptedCookies = await encrypt(cookies, c.env.ENCRYPTION_KEY);
+  // Normalize cookies to string format
+  const normalizedCookies = testResult.rawCookies || normalizeCookies(cookies);
   
-  // Get initial credits
-  const credits = await fetchCredits(cookies);
-  const initialCredits = credits?.remaining || 0;
+  // Encrypt cookies
+  const encryptedCookies = await encrypt(normalizedCookies, c.env.ENCRYPTION_KEY);
+  
+  // Get initial credits from test result
+  const initialCredits = testResult.credits?.remaining || 0;
   
   try {
     const account = await createAccount(
@@ -131,6 +169,7 @@ accountRoutes.post('/', async (c) => {
       account: Omit<MiniMaxAccount, 'cookies'>; 
       userName: string | undefined;
       initialCredits: number;
+      checkinStatus: typeof testResult.checkin;
     }>>({
       success: true,
       data: {
@@ -146,8 +185,9 @@ accountRoutes.post('/', async (c) => {
           created_at: account.created_at,
           updated_at: account.updated_at
         },
-        userName: validationResult.userName,
-        initialCredits
+        userName: testResult.user?.name,
+        initialCredits,
+        checkinStatus: testResult.checkin
       },
       message: 'Account added successfully'
     }, 201);
@@ -189,17 +229,18 @@ accountRoutes.put('/:id', async (c) => {
   }
   
   if (body.cookies) {
-    // Validate new cookies
-    const validationResult = await validateCookies(body.cookies);
-    if (!validationResult.valid) {
+    // Test new cookies
+    const testResult = await testCookies(body.cookies);
+    if (!testResult.success) {
       return c.json<ApiResponse>({
         success: false,
-        error: `Invalid cookies: ${validationResult.error}`
+        error: `Invalid cookies: ${testResult.error}`
       }, 400);
     }
     
-    // Encrypt new cookies
-    updates.cookies = await encrypt(body.cookies, c.env.ENCRYPTION_KEY);
+    // Normalize and encrypt new cookies
+    const normalizedCookies = testResult.rawCookies || normalizeCookies(body.cookies);
+    updates.cookies = await encrypt(normalizedCookies, c.env.ENCRYPTION_KEY);
   }
   
   if (body.is_active !== undefined) {
@@ -406,6 +447,54 @@ accountRoutes.post('/:id/refresh', async (c) => {
     success: true,
     data: { credits },
     message: 'Credits refreshed successfully'
+  });
+});
+
+// Test existing account cookies
+accountRoutes.post('/:id/test', async (c) => {
+  const user = getCurrentUser(c);
+  const accountId = parseInt(c.req.param('id'));
+  
+  if (isNaN(accountId)) {
+    return c.json<ApiResponse>({
+      success: false,
+      error: 'Invalid account ID'
+    }, 400);
+  }
+  
+  const account = await getAccountById(c.env.DB, accountId, user.userId);
+  if (!account) {
+    return c.json<ApiResponse>({
+      success: false,
+      error: 'Account not found'
+    }, 404);
+  }
+  
+  // Decrypt cookies
+  const cookies = await decrypt(account.cookies, c.env.ENCRYPTION_KEY);
+  
+  // Test cookies
+  const result = await testCookies(cookies);
+  
+  if (!result.success) {
+    return c.json<ApiResponse>({
+      success: false,
+      error: result.error || 'Cookies are expired or invalid'
+    }, 400);
+  }
+  
+  return c.json<ApiResponse<{
+    user: typeof result.user;
+    credits: typeof result.credits;
+    checkin: typeof result.checkin;
+  }>>({
+    success: true,
+    data: {
+      user: result.user,
+      credits: result.credits,
+      checkin: result.checkin
+    },
+    message: 'Account is valid!'
   });
 });
 
