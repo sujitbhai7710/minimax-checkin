@@ -3,9 +3,12 @@
 import axios from 'axios';
 import { useAuthStore } from '../store/auth';
 
+// Production API URL - hardcoded for reliability
+const API_BASE_URL = 'https://minimax-checkin.minimaxpro.workers.dev/api';
+
 // Create axios instance
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
+  baseURL: API_BASE_URL,
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
