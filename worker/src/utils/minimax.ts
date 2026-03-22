@@ -2,6 +2,15 @@
 
 import { MiniMaxCheckinResult, MiniMaxCredits } from '../types';
 
+// MD5 implementation for Cloudflare Workers
+async function md5(message: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(message);
+  const hashBuffer = await crypto.subtle.digest('MD5', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Parse cookies from multiple formats (string or already-parsed JSON)
 export function parseCookies(cookieInput: string | unknown): Record<string, string> {
   const cookies: Record<string, string> = {};
@@ -213,6 +222,64 @@ export function extractUserInfoFromToken(cookieInput: string | unknown): {
   };
 }
 
+// Generate signature headers
+async function generateSignatureHeaders(
+  urlWithParams: string,
+  body: string,
+  timestampMs: number
+): Promise<{ xSignature: string; xTimestamp: string; yy: string }> {
+  const timestampSec = Math.floor(timestampMs / 1000);
+  
+  // x-signature = MD5(timestamp_seconds + "I*7Cf%WZ#S&%1RlZJ&C2" + body_string)
+  const xSignature = await md5(`${timestampSec}I*7Cf%WZ#S&%1RlZJ&C2${body}`);
+  
+  // yy = MD5(encodeURIComponent(url_with_params) + "_" + body_json + MD5(timestamp_ms.toString()) + "ooui")
+  const timestampMd5 = await md5(timestampMs.toString());
+  const yy = await md5(`${encodeURIComponent(urlWithParams)}_${body}${timestampMd5}ooui`);
+  
+  return {
+    xSignature,
+    xTimestamp: timestampSec.toString(),
+    yy
+  };
+}
+
+// Build query parameters for MiniMax API
+function buildQueryParams(params: {
+  userId: string;
+  deviceId: string;
+  uuid: string;
+  token: string;
+  timestampMs: number;
+  timezoneOffset?: number;
+}): URLSearchParams {
+  const timezoneOffset = params.timezoneOffset ?? -new Date().getTimezoneOffset() * 60;
+  
+  return new URLSearchParams({
+    device_platform: 'web',
+    biz_id: '3',
+    app_id: '3001',
+    version_code: '22201',
+    unix: params.timestampMs.toString(),
+    timezone_offset: timezoneOffset.toString(),
+    lang: 'en',
+    sys_language: 'en',
+    uuid: params.uuid,
+    device_id: params.deviceId,
+    os_name: 'h5',
+    browser_name: 'chrome',
+    device_memory: '8',
+    cpu_core_num: '4',
+    browser_language: 'en-US',
+    browser_platform: 'Win32',
+    user_id: params.userId,
+    screen_width: '1920',
+    screen_height: '1080',
+    token: params.token,
+    client: 'web'
+  });
+}
+
 // Fetch membership info (credits) from MiniMax API
 export async function fetchMembershipInfo(cookies: string, token: string): Promise<{
   success: boolean;
@@ -230,39 +297,32 @@ export async function fetchMembershipInfo(cookies: string, token: string): Promi
     const userId = tokenInfo.user.id;
     const deviceId = tokenInfo.user.deviceID || generateDeviceID();
     const uuid = generateUUID();
-    const unix = Date.now();
-    const timezoneOffset = -new Date().getTimezoneOffset() * 60; // IST is +19800 seconds
+    const timestampMs = Date.now();
     
     // Build query parameters
-    const queryParams = new URLSearchParams({
-      device_platform: 'web',
-      biz_id: '3',
-      app_id: '3001',
-      version_code: '22201',
-      unix: unix.toString(),
-      timezone_offset: timezoneOffset.toString(),
-      lang: 'en',
-      sys_language: 'en',
-      uuid: uuid,
-      device_id: deviceId,
-      os_name: 'h5',
-      browser_name: 'safari',
-      device_memory: '2',
-      cpu_core_num: '2',
-      browser_language: 'en-US',
-      browser_platform: 'Win32',
-      user_id: userId,
-      screen_width: '1280',
-      screen_height: '800',
-      token: token,
-      client: 'web'
+    const queryParams = buildQueryParams({
+      userId,
+      deviceId,
+      uuid,
+      token,
+      timestampMs
     });
     
-    const url = `https://agent.minimax.io/matrix/api/v1/commerce/get_membership_info?${queryParams.toString()}`;
+    const baseUrl = 'https://agent.minimax.io/matrix/api/v1/commerce/get_membership_info';
+    const urlWithParams = `${baseUrl}?${queryParams.toString()}`;
+    const body = '{}';
     
-    console.log(`[MiniMax API] POST ${url}`);
+    // Generate signature headers
+    const { xSignature, xTimestamp, yy } = await generateSignatureHeaders(
+      urlWithParams,
+      body,
+      timestampMs
+    );
     
-    const response = await fetch(url, {
+    console.log(`[MiniMax API] POST ${urlWithParams}`);
+    console.log(`[MiniMax API] Headers: x-timestamp=${xTimestamp}, x-signature=${xSignature}, yy=${yy}`);
+    
+    const response = await fetch(urlWithParams, {
       method: 'POST',
       headers: {
         'Accept': 'application/json, text/plain, */*',
@@ -272,8 +332,12 @@ export async function fetchMembershipInfo(cookies: string, token: string): Promi
         'Origin': 'https://agent.minimax.io',
         'Referer': 'https://agent.minimax.io/',
         'Token': token,
+        'x-timestamp': xTimestamp,
+        'x-signature': xSignature,
+        'yy': yy,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-      }
+      },
+      body: body
     });
     
     console.log(`[MiniMax API] Response status: ${response.status}`);
@@ -288,7 +352,6 @@ export async function fetchMembershipInfo(cookies: string, token: string): Promi
     console.log(`[MiniMax API] Response data:`, JSON.stringify(data).substring(0, 500));
     
     // Parse credit info from response
-    // The response structure depends on MiniMax's actual API
     if (data.code === 0 || data.code === 200 || data.data) {
       const membershipData = data.data || data;
       
@@ -336,40 +399,31 @@ export async function performCheckin(cookies: string): Promise<MiniMaxCheckinRes
     const userId = tokenInfo.user.id;
     const deviceId = tokenInfo.user.deviceID || generateDeviceID();
     const uuid = generateUUID();
-    const unix = Date.now();
-    const timezoneOffset = -new Date().getTimezoneOffset() * 60;
+    const timestampMs = Date.now();
     
     // Build query parameters for check-in
-    const queryParams = new URLSearchParams({
-      device_platform: 'web',
-      biz_id: '3',
-      app_id: '3001',
-      version_code: '22201',
-      unix: unix.toString(),
-      timezone_offset: timezoneOffset.toString(),
-      lang: 'en',
-      sys_language: 'en',
-      uuid: uuid,
-      device_id: deviceId,
-      os_name: 'h5',
-      browser_name: 'safari',
-      device_memory: '2',
-      cpu_core_num: '2',
-      browser_language: 'en-US',
-      browser_platform: 'Win32',
-      user_id: userId,
-      screen_width: '1280',
-      screen_height: '800',
-      token: token,
-      client: 'web'
+    const queryParams = buildQueryParams({
+      userId,
+      deviceId,
+      uuid,
+      token,
+      timestampMs
     });
     
-    // Try check-in endpoint
-    const checkinUrl = `https://agent.minimax.io/matrix/api/v1/commerce/check_in?${queryParams.toString()}`;
+    const baseUrl = 'https://agent.minimax.io/matrix/api/v1/commerce/check_in';
+    const urlWithParams = `${baseUrl}?${queryParams.toString()}`;
+    const body = '{}';
     
-    console.log(`[MiniMax API] POST ${checkinUrl}`);
+    // Generate signature headers
+    const { xSignature, xTimestamp, yy } = await generateSignatureHeaders(
+      urlWithParams,
+      body,
+      timestampMs
+    );
     
-    const response = await fetch(checkinUrl, {
+    console.log(`[MiniMax API] Check-in POST ${urlWithParams}`);
+    
+    const response = await fetch(urlWithParams, {
       method: 'POST',
       headers: {
         'Accept': 'application/json, text/plain, */*',
@@ -379,8 +433,12 @@ export async function performCheckin(cookies: string): Promise<MiniMaxCheckinRes
         'Origin': 'https://agent.minimax.io',
         'Referer': 'https://agent.minimax.io/',
         'Token': token,
+        'x-timestamp': xTimestamp,
+        'x-signature': xSignature,
+        'yy': yy,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-      }
+      },
+      body: body
     });
     
     console.log(`[MiniMax API] Check-in response status: ${response.status}`);
