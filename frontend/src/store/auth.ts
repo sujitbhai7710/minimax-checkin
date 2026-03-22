@@ -1,7 +1,7 @@
 // Authentication store using Zustand
 
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { User } from '../types';
 
 interface AuthState {
@@ -47,11 +47,18 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'minimax-auth',
+      storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         user: state.user,
         token: state.token,
         isAuthenticated: state.isAuthenticated,
       }),
+      onRehydrateStorage: () => (state) => {
+        // After rehydration, set loading to false
+        if (state) {
+          state.setLoading(false);
+        }
+      },
     }
   )
 );

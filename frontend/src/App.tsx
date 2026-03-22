@@ -3,8 +3,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { useAuthStore } from './store/auth';
-import { useEffect } from 'react';
-import { authApi } from './utils/api';
 
 // Pages
 import Login from './pages/Login';
@@ -57,23 +55,8 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-  const { token, setLoading, logout } = useAuthStore();
-  
-  useEffect(() => {
-    // Verify token on app load
-    const verifyAuth = async () => {
-      if (token) {
-        try {
-          await authApi.getMe();
-        } catch {
-          logout();
-        }
-      }
-      setLoading(false);
-    };
-    
-    verifyAuth();
-  }, [token, logout, setLoading]);
+  // The auth state is now managed by Zustand with persist middleware
+  // Rehydration happens automatically and sets isLoading to false via onRehydrateStorage
   
   return (
     <BrowserRouter>

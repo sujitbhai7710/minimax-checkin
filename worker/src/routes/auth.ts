@@ -5,6 +5,7 @@ import { Env, User, UserCreate, UserLogin, ApiResponse } from '../types';
 import { createUser, getUserByEmail, updateUserLastLogin } from '../utils/db';
 import { hashPassword, verifyPassword } from '../utils/crypto';
 import { generateJwt } from '../utils/jwt';
+import { authMiddleware } from '../utils/middleware';
 
 const authRoutes = new Hono<{ Bindings: Env }>();
 
@@ -125,9 +126,16 @@ authRoutes.post('/login', async (c) => {
   });
 });
 
-// Get current user
-authRoutes.get('/me', async (c) => {
+// Get current user (protected route - requires authentication)
+authRoutes.get('/me', authMiddleware, async (c) => {
   const user = c.get('user');
+  
+  if (!user || !user.userId) {
+    return c.json<ApiResponse>({
+      success: false,
+      error: 'User not authenticated'
+    }, 401);
+  }
   
   const userData = await c.env.DB.prepare(
     'SELECT id, email, name, created_at, last_login FROM users WHERE id = ?'
