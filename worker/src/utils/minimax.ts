@@ -2,9 +2,30 @@
 
 import { MiniMaxCheckinResult, MiniMaxCredits } from '../types';
 
-// Parse cookies from multiple formats
-export function parseCookies(cookieInput: string): Record<string, string> {
+// Parse cookies from multiple formats (string or already-parsed JSON)
+export function parseCookies(cookieInput: string | unknown): Record<string, string> {
   const cookies: Record<string, string> = {};
+  
+  // Handle already-parsed JSON array
+  if (Array.isArray(cookieInput)) {
+    for (const cookie of cookieInput) {
+      if (cookie && typeof cookie === 'object' && 'name' in cookie && 'value' in cookie) {
+        cookies[cookie.name as string] = cookie.value as string;
+      }
+    }
+    return cookies;
+  }
+  
+  // Handle already-parsed JSON object
+  if (typeof cookieInput === 'object' && cookieInput !== null && 'name' in cookieInput && 'value' in cookieInput) {
+    cookies[(cookieInput as { name: string }).name] = (cookieInput as { value: string }).value;
+    return cookies;
+  }
+  
+  // Handle string input
+  if (typeof cookieInput !== 'string') {
+    return cookies;
+  }
   
   // Trim input
   const trimmed = cookieInput.trim();
@@ -63,19 +84,35 @@ export function cookiesToString(cookies: Record<string, string>): string {
 }
 
 // Normalize cookies input to string format
-export function normalizeCookies(cookieInput: string): string {
+export function normalizeCookies(cookieInput: string | unknown): string {
   const cookies = parseCookies(cookieInput);
   return cookiesToString(cookies);
 }
 
 // Validate cookies format
-export function validateCookiesFormat(cookieInput: string): { valid: boolean; error?: string; cookies?: string } {
-  if (!cookieInput || cookieInput.trim() === '') {
+export function validateCookiesFormat(cookieInput: string | unknown): { valid: boolean; error?: string; cookies?: string } {
+  // Check for empty input
+  if (!cookieInput) {
+    return { valid: false, error: 'Cookies cannot be empty' };
+  }
+  
+  // For string input, check if trimmed is empty
+  if (typeof cookieInput === 'string' && cookieInput.trim() === '') {
+    return { valid: false, error: 'Cookies cannot be empty' };
+  }
+  
+  // For array input, check if array is empty
+  if (Array.isArray(cookieInput) && cookieInput.length === 0) {
     return { valid: false, error: 'Cookies cannot be empty' };
   }
   
   const cookies = parseCookies(cookieInput);
   const cookieString = cookiesToString(cookies);
+  
+  // Check if we have any cookies parsed
+  if (Object.keys(cookies).length === 0) {
+    return { valid: false, error: 'No valid cookies found. Please check the format.' };
+  }
   
   // Check if we have the essential cookies
   if (!cookies['_token']) {
@@ -285,7 +322,7 @@ export async function performCheckin(cookies: string): Promise<MiniMaxCheckinRes
 }
 
 // Comprehensive test function - returns all available data
-export async function testCookies(cookieInput: string): Promise<{
+export async function testCookies(cookieInput: string | unknown): Promise<{
   success: boolean;
   user?: {
     id: string;
@@ -347,10 +384,10 @@ export async function testCookies(cookieInput: string): Promise<{
 }
 
 // Validate cookies by making a test request
-export async function validateCookies(cookieInput: string): Promise<{ valid: boolean; userName?: string; error?: string }> {
+export async function validateCookies(cookieInput: string | unknown): Promise<{ valid: boolean; userName?: string; error?: string }> {
   const validation = validateCookiesFormat(cookieInput);
   if (!validation.valid) {
-    return validation;
+    return { valid: false, error: validation.error };
   }
   
   const userInfo = await fetchUserInfo(validation.cookies!);

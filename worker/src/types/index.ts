@@ -44,12 +44,12 @@ export interface MiniMaxAccount {
 
 export interface MiniMaxAccountCreate {
   account_name: string;
-  cookies: string;
+  cookies: string | unknown; // Can be string or JSON array/object
 }
 
 export interface MiniMaxAccountUpdate {
   account_name?: string;
-  cookies?: string;
+  cookies?: string | unknown; // Can be string or JSON array/object
   is_active?: number;
 }
 

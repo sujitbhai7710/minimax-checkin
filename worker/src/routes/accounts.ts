@@ -22,7 +22,7 @@ const accountRoutes = new Hono<{ Bindings: Env }>();
 
 // Test cookies endpoint (before adding account)
 accountRoutes.post('/test', async (c) => {
-  const body = await c.req.json<{ cookies: string }>();
+  const body = await c.req.json<{ cookies: string | unknown }>();
   const { cookies } = body;
   
   if (!cookies) {
