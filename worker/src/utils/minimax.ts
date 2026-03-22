@@ -44,7 +44,6 @@ export function parseCookies(cookieInput: string | unknown): Record<string, stri
       }
     } catch (e) {
       // Not valid JSON, try other formats
-      console.log('Failed to parse JSON array cookies:', e);
     }
   }
   
@@ -58,7 +57,6 @@ export function parseCookies(cookieInput: string | unknown): Record<string, stri
       }
     } catch (e) {
       // Not valid JSON, try other formats
-      console.log('Failed to parse JSON object cookies:', e);
     }
   }
   
@@ -150,6 +148,20 @@ function decodeJWT(token: string): any | null {
   }
 }
 
+// Generate UUID
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+// Generate device ID (8 digit number)
+function generateDeviceID(): string {
+  return Math.floor(Math.random() * 90000000 + 10000000).toString();
+}
+
 // Extract user info from JWT token directly (no API call needed)
 export function extractUserInfoFromToken(cookieInput: string | unknown): {
   success: boolean;
@@ -201,53 +213,180 @@ export function extractUserInfoFromToken(cookieInput: string | unknown): {
   };
 }
 
-// Make API request with proper headers
-async function makeAPIRequest(
-  endpoint: string,
-  cookies: string,
-  method: string = 'GET',
-  body?: any
-): Promise<{ ok: boolean; status: number; data: any }> {
-  const url = `https://agent.minimax.io${endpoint}`;
-  
-  console.log(`[MiniMax API] ${method} ${url}`);
-  
-  const headers: Record<string, string> = {
-    'Cookie': cookies,
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://agent.minimax.io/',
-    'Origin': 'https://agent.minimax.io',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-  };
-  
-  if (method === 'POST' && body) {
-    headers['Content-Type'] = 'application/json';
-  }
-  
+// Fetch membership info (credits) from MiniMax API
+export async function fetchMembershipInfo(cookies: string, token: string): Promise<{
+  success: boolean;
+  credits?: MiniMaxCredits;
+  membershipInfo?: any;
+  error?: string;
+}> {
   try {
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined
+    // Extract user info from token
+    const tokenInfo = extractUserInfoFromToken(cookies);
+    if (!tokenInfo.success || !tokenInfo.user) {
+      return { success: false, error: tokenInfo.error || 'Invalid token' };
+    }
+    
+    const userId = tokenInfo.user.id;
+    const deviceId = tokenInfo.user.deviceID || generateDeviceID();
+    const uuid = generateUUID();
+    const unix = Date.now();
+    const timezoneOffset = -new Date().getTimezoneOffset() * 60; // IST is +19800 seconds
+    
+    // Build query parameters
+    const queryParams = new URLSearchParams({
+      device_platform: 'web',
+      biz_id: '3',
+      app_id: '3001',
+      version_code: '22201',
+      unix: unix.toString(),
+      timezone_offset: timezoneOffset.toString(),
+      lang: 'en',
+      sys_language: 'en',
+      uuid: uuid,
+      device_id: deviceId,
+      os_name: 'h5',
+      browser_name: 'safari',
+      device_memory: '2',
+      cpu_core_num: '2',
+      browser_language: 'en-US',
+      browser_platform: 'Win32',
+      user_id: userId,
+      screen_width: '1280',
+      screen_height: '800',
+      token: token,
+      client: 'web'
     });
     
-    const responseText = await response.text();
-    console.log(`[MiniMax API] Response status: ${response.status}`);
-    console.log(`[MiniMax API] Response body: ${responseText.substring(0, 500)}`);
+    const url = `https://agent.minimax.io/matrix/api/v1/commerce/get_membership_info?${queryParams.toString()}`;
     
-    // Check if response is Cloudflare challenge
-    if (responseText.includes('Just a moment') || responseText.includes('challenge')) {
-      console.error('[MiniMax API] Cloudflare challenge detected');
+    console.log(`[MiniMax API] POST ${url}`);
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Content-Type': 'application/json',
+        'Cookie': cookies,
+        'Origin': 'https://agent.minimax.io',
+        'Referer': 'https://agent.minimax.io/',
+        'Token': token,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+      }
+    });
+    
+    console.log(`[MiniMax API] Response status: ${response.status}`);
+    
+    if (!response.ok) {
+      const responseText = await response.text();
+      console.log(`[MiniMax API] Response body: ${responseText.substring(0, 500)}`);
+      return { success: false, error: `HTTP ${response.status}: ${responseText.substring(0, 200)}` };
+    }
+    
+    const data = await response.json();
+    console.log(`[MiniMax API] Response data:`, JSON.stringify(data).substring(0, 500));
+    
+    // Parse credit info from response
+    // The response structure depends on MiniMax's actual API
+    if (data.code === 0 || data.code === 200 || data.data) {
+      const membershipData = data.data || data;
+      
       return {
-        ok: false,
-        status: 403,
-        data: { error: 'Cloudflare challenge - cookies may need refresh' }
+        success: true,
+        credits: {
+          total: membershipData.total_credits || membershipData.totalCredits || membershipData.total || 0,
+          used: membershipData.used_credits || membershipData.usedCredits || membershipData.used || 0,
+          remaining: membershipData.remaining_credits || membershipData.remainingCredits || membershipData.balance || membershipData.credit_balance || 0
+        },
+        membershipInfo: membershipData
       };
     }
+    
+    return { success: false, error: data.message || 'Unknown response format' };
+    
+  } catch (error) {
+    console.error(`[MiniMax API] Request failed:`, error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Network error'
+    };
+  }
+}
+
+// Perform daily check-in (login check-in)
+export async function performCheckin(cookies: string): Promise<MiniMaxCheckinResult> {
+  try {
+    // Extract token from cookies
+    const token = extractTokenFromCookies(cookies);
+    if (!token) {
+      return { success: false, error: 'No token found in cookies' };
+    }
+    
+    // Extract user info from token
+    const tokenInfo = extractUserInfoFromToken(cookies);
+    if (!tokenInfo.success || !tokenInfo.user) {
+      return { success: false, error: tokenInfo.error || 'Invalid token' };
+    }
+    
+    // Get current credits before check-in
+    const beforeInfo = await fetchMembershipInfo(cookies, token);
+    const creditsBefore = beforeInfo.credits?.remaining || 0;
+    
+    const userId = tokenInfo.user.id;
+    const deviceId = tokenInfo.user.deviceID || generateDeviceID();
+    const uuid = generateUUID();
+    const unix = Date.now();
+    const timezoneOffset = -new Date().getTimezoneOffset() * 60;
+    
+    // Build query parameters for check-in
+    const queryParams = new URLSearchParams({
+      device_platform: 'web',
+      biz_id: '3',
+      app_id: '3001',
+      version_code: '22201',
+      unix: unix.toString(),
+      timezone_offset: timezoneOffset.toString(),
+      lang: 'en',
+      sys_language: 'en',
+      uuid: uuid,
+      device_id: deviceId,
+      os_name: 'h5',
+      browser_name: 'safari',
+      device_memory: '2',
+      cpu_core_num: '2',
+      browser_language: 'en-US',
+      browser_platform: 'Win32',
+      user_id: userId,
+      screen_width: '1280',
+      screen_height: '800',
+      token: token,
+      client: 'web'
+    });
+    
+    // Try check-in endpoint
+    const checkinUrl = `https://agent.minimax.io/matrix/api/v1/commerce/check_in?${queryParams.toString()}`;
+    
+    console.log(`[MiniMax API] POST ${checkinUrl}`);
+    
+    const response = await fetch(checkinUrl, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Content-Type': 'application/json',
+        'Cookie': cookies,
+        'Origin': 'https://agent.minimax.io',
+        'Referer': 'https://agent.minimax.io/',
+        'Token': token,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+      }
+    });
+    
+    console.log(`[MiniMax API] Check-in response status: ${response.status}`);
+    
+    const responseText = await response.text();
+    console.log(`[MiniMax API] Check-in response: ${responseText.substring(0, 500)}`);
     
     let data;
     try {
@@ -256,184 +395,52 @@ async function makeAPIRequest(
       data = { rawText: responseText };
     }
     
+    // Check for already checked in
+    if (data.code === 1001 || data.message?.includes('already') || data.message?.includes('已签到')) {
+      return {
+        success: true,
+        alreadyCheckedIn: true,
+        credits: creditsBefore
+      };
+    }
+    
+    // Check for success
+    if (data.code === 0 || data.code === 200 || data.success) {
+      // Get credits after check-in
+      const afterInfo = await fetchMembershipInfo(cookies, token);
+      const creditsAfter = afterInfo.credits?.remaining || creditsBefore;
+      
+      return {
+        success: true,
+        credits: creditsAfter,
+        creditsEarned: data.data?.reward || data.data?.credits_earned || (creditsAfter - creditsBefore) || 200,
+        alreadyCheckedIn: false
+      };
+    }
+    
     return {
-      ok: response.ok,
-      status: response.status,
-      data
+      success: false,
+      error: data.message || `HTTP ${response.status}`
     };
+    
   } catch (error) {
-    console.error(`[MiniMax API] Request failed:`, error);
     return {
-      ok: false,
-      status: 0,
-      data: { error: error instanceof Error ? error.message : 'Network error' }
+      success: false,
+      error: error instanceof Error ? error.message : 'Network error'
     };
   }
 }
 
-// Fetch user info - try multiple endpoints
-export async function fetchUserInfo(cookies: string): Promise<{
-  success: boolean;
-  user?: {
-    id: string;
-    name: string;
-    avatar: string;
-    email?: string;
-  };
-  error?: string;
-}> {
-  // First, try to extract from JWT token
-  const tokenInfo = extractUserInfoFromToken(cookies);
-  if (tokenInfo.success && tokenInfo.user) {
-    console.log('[MiniMax API] User info extracted from JWT token');
-    return {
-      success: true,
-      user: tokenInfo.user
-    };
-  }
-  
-  // If token extraction fails, try API endpoints
-  const endpoints = [
-    '/api/user/info',
-    '/api/user',
-    '/api/v1/user/info',
-    '/api/v1/user'
-  ];
-  
-  for (const endpoint of endpoints) {
-    const result = await makeAPIRequest(endpoint, cookies);
-    if (result.ok && result.data) {
-      const userData = result.data.data || result.data;
-      if (userData.id || userData.name) {
-        return {
-          success: true,
-          user: {
-            id: userData.id || '',
-            name: userData.name || 'Unknown',
-            avatar: userData.avatar || '',
-            email: userData.email
-          }
-        };
-      }
-    }
-  }
-  
-  return {
-    success: false,
-    error: tokenInfo.error || 'Failed to fetch user info from all endpoints'
-  };
-}
-
-// Fetch user credits - try multiple endpoints
+// Fetch user credits
 export async function fetchCredits(cookies: string): Promise<MiniMaxCredits | null> {
-  const endpoints = [
-    '/api/user/credits',
-    '/api/credits',
-    '/api/user/balance',
-    '/api/v1/user/credits',
-    '/api/v1/credits'
-  ];
+  const token = extractTokenFromCookies(cookies);
+  if (!token) return null;
   
-  for (const endpoint of endpoints) {
-    const result = await makeAPIRequest(endpoint, cookies);
-    if (result.ok && result.data) {
-      const creditData = result.data.data || result.data;
-      if (creditData && (creditData.total !== undefined || creditData.remaining !== undefined || creditData.balance !== undefined)) {
-        return {
-          total: creditData.total || creditData.totalCredit || 0,
-          used: creditData.used || creditData.usedCredit || 0,
-          remaining: creditData.remaining || creditData.balance || creditData.creditBalance || 0
-        };
-      }
-    }
-  }
-  
-  console.error('[MiniMax API] Failed to fetch credits from all endpoints');
-  return null;
+  const result = await fetchMembershipInfo(cookies, token);
+  return result.credits || null;
 }
 
-// Check if user has already checked in today
-export async function checkTodayCheckin(cookies: string): Promise<{
-  success: boolean;
-  checkedIn?: boolean;
-  error?: string;
-}> {
-  const endpoints = [
-    '/api/checkin/status',
-    '/api/checkin',
-    '/api/daily-reward/status',
-    '/api/v1/checkin/status'
-  ];
-  
-  for (const endpoint of endpoints) {
-    const result = await makeAPIRequest(endpoint, cookies);
-    if (result.ok && result.data) {
-      const checkinData = result.data.data || result.data;
-      return {
-        success: true,
-        checkedIn: checkinData.checkedIn || checkinData.today || checkinData.hasCheckedIn || false
-      };
-    }
-  }
-  
-  return { success: false, error: 'Failed to check checkin status' };
-}
-
-// Perform daily check-in - try multiple endpoints
-export async function performCheckin(cookies: string): Promise<MiniMaxCheckinResult> {
-  const endpoints = [
-    { path: '/api/checkin', method: 'POST' },
-    { path: '/api/checkin/daily', method: 'POST' },
-    { path: '/api/daily-reward', method: 'POST' },
-    { path: '/api/daily-reward/claim', method: 'POST' },
-    { path: '/api/v1/checkin', method: 'POST' },
-    { path: '/api/user/checkin', method: 'POST' }
-  ];
-  
-  for (const { path, method } of endpoints) {
-    const result = await makeAPIRequest(path, cookies, method, {});
-    
-    if (result.ok || result.status === 200) {
-      const checkinData = result.data.data || result.data;
-      
-      // Check for success
-      if (result.data.code === 0 || result.data.code === 200 || result.data.success) {
-        return {
-          success: true,
-          credits: checkinData.credits || checkinData.creditBalance,
-          creditsEarned: checkinData.creditsEarned || checkinData.reward || 200,
-          alreadyCheckedIn: false
-        };
-      }
-      
-      // Check if already checked in
-      if (result.data.message?.includes('already') || 
-          result.data.message?.includes('已签到') || 
-          result.data.code === 1001 ||
-          checkinData.alreadyCheckedIn) {
-        return {
-          success: true,
-          alreadyCheckedIn: true
-        };
-      }
-    }
-    
-    // Check for "already checked in" in error responses
-    if (result.data.message?.includes('already') || result.data.code === 1001) {
-      return {
-        success: true,
-        alreadyCheckedIn: true
-      };
-    }
-  }
-  
-  return {
-    success: false,
-    error: 'Check-in failed on all endpoints. API may require browser session.'
-  };
-}
-
-// Comprehensive test function - returns all available data
+// Comprehensive test function
 export async function testCookies(cookieInput: string | unknown): Promise<{
   success: boolean;
   user?: {
@@ -466,6 +473,7 @@ export async function testCookies(cookieInput: string | unknown): Promise<{
   }
   
   const cookies = validation.cookies!;
+  const token = validation.parsedCookies!['_token'];
   
   // Extract user info from JWT token
   const tokenInfo = extractUserInfoFromToken(cookies);
@@ -493,8 +501,9 @@ export async function testCookies(cookieInput: string | unknown): Promise<{
     };
   }
   
-  // Try to fetch credits (may fail due to Cloudflare)
-  const credits = await fetchCredits(cookies);
+  // Try to fetch credits using the real API
+  const membershipResult = await fetchMembershipInfo(cookies, token);
+  const credits = membershipResult.credits;
   
   // Try check-in
   const checkinResult = await performCheckin(cookies);
@@ -509,15 +518,15 @@ export async function testCookies(cookieInput: string | unknown): Promise<{
       message: checkinResult.alreadyCheckedIn 
         ? 'Already checked in today' 
         : checkinResult.success 
-          ? 'Check-in available' 
-          : checkinResult.error || 'Unknown status'
+          ? `Check-in successful! +${checkinResult.creditsEarned || 200} credits`
+          : checkinResult.error || 'Check-in failed'
     },
     tokenInfo: tokenExpiryInfo,
     rawCookies: cookies
   };
 }
 
-// Validate cookies by making a test request
+// Validate cookies by checking token
 export async function validateCookies(cookieInput: string | unknown): Promise<{ valid: boolean; userName?: string; error?: string }> {
   const validation = validateCookiesFormat(cookieInput);
   if (!validation.valid) {
@@ -573,5 +582,29 @@ export async function completeCheckinFlow(
     credits: creditsAfter?.remaining || creditsBefore?.remaining || 0,
     creditsEarned: checkinResult.creditsEarned || (creditsAfter && creditsBefore ? creditsAfter.remaining - creditsBefore.remaining : 0),
     alreadyCheckedIn: checkinResult.alreadyCheckedIn
+  };
+}
+
+// Fetch user info - extract from JWT token
+export async function fetchUserInfo(cookies: string): Promise<{
+  success: boolean;
+  user?: {
+    id: string;
+    name: string;
+    avatar: string;
+    email?: string;
+  };
+  error?: string;
+}> {
+  const tokenInfo = extractUserInfoFromToken(cookies);
+  if (tokenInfo.success && tokenInfo.user) {
+    return {
+      success: true,
+      user: tokenInfo.user
+    };
+  }
+  return {
+    success: false,
+    error: tokenInfo.error || 'Invalid token'
   };
 }
