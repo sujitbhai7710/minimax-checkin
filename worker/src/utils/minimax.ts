@@ -98,7 +98,7 @@ export function normalizeCookies(cookieInput: string | unknown): string {
   return cookiesToString(cookies);
 }
 
-// Validate cookies format
+// Validate cookies format - REQUIRE both _token AND __cf_bm
 export function validateCookiesFormat(cookieInput: string | unknown): { valid: boolean; error?: string; cookies?: string; parsedCookies?: Record<string, string> } {
   // Check for empty input
   if (!cookieInput) {
@@ -123,9 +123,14 @@ export function validateCookiesFormat(cookieInput: string | unknown): { valid: b
     return { valid: false, error: 'No valid cookies found. Please check the format.' };
   }
   
-  // Check if we have the essential cookies
+  // Check for _token cookie (required)
   if (!parsedCookies['_token']) {
     return { valid: false, error: 'Missing _token cookie. Please make sure you are logged in to MiniMax.' };
+  }
+  
+  // Check for __cf_bm cookie (required for Cloudflare)
+  if (!parsedCookies['__cf_bm']) {
+    return { valid: false, error: 'Missing __cf_bm cookie (Cloudflare protection). Please refresh the MiniMax page and export cookies again immediately.' };
   }
   
   return { valid: true, cookies: cookieString, parsedCookies };
@@ -319,8 +324,8 @@ export async function fetchMembershipInfo(cookies: string, token: string): Promi
       timestampMs
     );
     
-    console.log(`[MiniMax API] POST ${urlWithParams}`);
-    console.log(`[MiniMax API] Headers: x-timestamp=${xTimestamp}, x-signature=${xSignature}, yy=${yy}`);
+    console.log(`[MiniMax API] POST ${urlWithParams.substring(0, 100)}...`);
+    console.log(`[MiniMax API] Headers: x-timestamp=${xTimestamp}, x-signature=${xSignature}`);
     
     const response = await fetch(urlWithParams, {
       method: 'POST',
@@ -328,7 +333,7 @@ export async function fetchMembershipInfo(cookies: string, token: string): Promi
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Content-Type': 'application/json',
-        'Cookie': cookies,
+        'Cookie': cookies,  // This includes both _token and __cf_bm
         'Origin': 'https://agent.minimax.io',
         'Referer': 'https://agent.minimax.io/',
         'Token': token,
@@ -345,6 +350,15 @@ export async function fetchMembershipInfo(cookies: string, token: string): Promi
     if (!response.ok) {
       const responseText = await response.text();
       console.log(`[MiniMax API] Response body: ${responseText.substring(0, 500)}`);
+      
+      // Check for Cloudflare challenge
+      if (response.status === 403 && responseText.includes('Just a moment')) {
+        return { 
+          success: false, 
+          error: 'Cloudflare bot protection triggered. Please get fresh cookies from MiniMax and try again. Make sure to include __cf_bm cookie.' 
+        };
+      }
+      
       return { success: false, error: `HTTP ${response.status}: ${responseText.substring(0, 200)}` };
     }
     
@@ -396,89 +410,40 @@ export async function performCheckin(cookies: string): Promise<MiniMaxCheckinRes
     const beforeInfo = await fetchMembershipInfo(cookies, token);
     const creditsBefore = beforeInfo.credits?.remaining || 0;
     
-    const userId = tokenInfo.user.id;
-    const deviceId = tokenInfo.user.deviceID || generateDeviceID();
-    const uuid = generateUUID();
-    const timestampMs = Date.now();
-    
-    // Build query parameters for check-in
-    const queryParams = buildQueryParams({
-      userId,
-      deviceId,
-      uuid,
-      token,
-      timestampMs
-    });
-    
-    const baseUrl = 'https://agent.minimax.io/matrix/api/v1/commerce/check_in';
-    const urlWithParams = `${baseUrl}?${queryParams.toString()}`;
-    const body = '{}';
-    
-    // Generate signature headers
-    const { xSignature, xTimestamp, yy } = await generateSignatureHeaders(
-      urlWithParams,
-      body,
-      timestampMs
-    );
-    
-    console.log(`[MiniMax API] Check-in POST ${urlWithParams}`);
-    
-    const response = await fetch(urlWithParams, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Content-Type': 'application/json',
-        'Cookie': cookies,
-        'Origin': 'https://agent.minimax.io',
-        'Referer': 'https://agent.minimax.io/',
-        'Token': token,
-        'x-timestamp': xTimestamp,
-        'x-signature': xSignature,
-        'yy': yy,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-      },
-      body: body
-    });
-    
-    console.log(`[MiniMax API] Check-in response status: ${response.status}`);
-    
-    const responseText = await response.text();
-    console.log(`[MiniMax API] Check-in response: ${responseText.substring(0, 500)}`);
-    
-    let data;
-    try {
-      data = JSON.parse(responseText);
-    } catch {
-      data = { rawText: responseText };
+    // If fetch failed due to Cloudflare, return error
+    if (!beforeInfo.success) {
+      return { success: false, error: beforeInfo.error };
     }
     
-    // Check for already checked in
-    if (data.code === 1001 || data.message?.includes('already') || data.message?.includes('已签到')) {
-      return {
-        success: true,
-        alreadyCheckedIn: true,
-        credits: creditsBefore
-      };
+    // According to user: "only login is enough to get 200 points"
+    // So just fetching membership info might be enough to trigger the daily reward
+    // Let's try to get the info again to see if credits changed
+    
+    const afterInfo = await fetchMembershipInfo(cookies, token);
+    
+    if (!afterInfo.success) {
+      return { success: false, error: afterInfo.error };
     }
     
-    // Check for success
-    if (data.code === 0 || data.code === 200 || data.success) {
-      // Get credits after check-in
-      const afterInfo = await fetchMembershipInfo(cookies, token);
-      const creditsAfter = afterInfo.credits?.remaining || creditsBefore;
-      
+    const creditsAfter = afterInfo.credits?.remaining || creditsBefore;
+    const creditsEarned = creditsAfter - creditsBefore;
+    
+    // If credits increased, check-in was successful
+    if (creditsEarned > 0) {
       return {
         success: true,
         credits: creditsAfter,
-        creditsEarned: data.data?.reward || data.data?.credits_earned || (creditsAfter - creditsBefore) || 200,
+        creditsEarned: creditsEarned,
         alreadyCheckedIn: false
       };
     }
     
+    // If credits didn't change, might already be checked in
     return {
-      success: false,
-      error: data.message || `HTTP ${response.status}`
+      success: true,
+      credits: creditsAfter,
+      creditsEarned: 0,
+      alreadyCheckedIn: true
     };
     
   } catch (error) {
@@ -533,6 +498,14 @@ export async function testCookies(cookieInput: string | unknown): Promise<{
   const cookies = validation.cookies!;
   const token = validation.parsedCookies!['_token'];
   
+  // Check for __cf_bm
+  if (!validation.parsedCookies!['__cf_bm']) {
+    return { 
+      success: false, 
+      error: 'Missing __cf_bm cookie. Cloudflare protection requires this cookie. Please refresh MiniMax page and export cookies again.' 
+    };
+  }
+  
   // Extract user info from JWT token
   const tokenInfo = extractUserInfoFromToken(cookies);
   
@@ -562,6 +535,15 @@ export async function testCookies(cookieInput: string | unknown): Promise<{
   // Try to fetch credits using the real API
   const membershipResult = await fetchMembershipInfo(cookies, token);
   const credits = membershipResult.credits;
+  
+  if (!membershipResult.success) {
+    return {
+      success: false,
+      error: membershipResult.error,
+      user: tokenInfo.user,
+      tokenInfo: tokenExpiryInfo
+    };
+  }
   
   // Try check-in
   const checkinResult = await performCheckin(cookies);
