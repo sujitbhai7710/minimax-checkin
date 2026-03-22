@@ -1,0 +1,23 @@
+name = "minimax-checkin"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+node_compat = true
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "minimax-checkin-db"
+database_id = "4e68a9be-9c8c-43d5-902c-0472ec46f8ac"
+
+# Cron triggers
+[triggers]
+crons = ["*/30 0-23 * * *"]  # Every 30 minutes
+
+# Environment variables
+[vars]
+ENVIRONMENT = "production"
+
+# Development settings
+[dev]
+port = 8787
+local_protocol = "http"

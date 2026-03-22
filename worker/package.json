@@ -1,0 +1,27 @@
+{
+  "name": "minimax-checkin-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker for MiniMax auto check-in",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute minimax-checkin-db --file=./schema.sql",
+    "db:migrate": "wrangler d1 migrations apply minimax-checkin-db",
+    "tail": "wrangler tail"
+  },
+  "dependencies": {
+    "hono": "^4.0.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.5",
+    "@types/uuid": "^9.0.7",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.22.0"
+  }
+}
